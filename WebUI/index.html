@@ -1,0 +1,146 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>人流密度监测系统</title>
+    <link rel="stylesheet" href="styles.css" />
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" />
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/heatmap.js/2.0.2/heatmap.min.js"></script>
+  </head>
+  <body>
+    <div class="container">
+      <header>
+        <h1><i class="fas fa-people-group"></i> 人流密度监测系统</h1>
+        <div class="header-controls">
+          <button id="refreshBtn" class="btn"><i class="fas fa-sync-alt"></i> 刷新数据</button>
+          <select id="timeRange">
+            <option value="1">过去1小时</option>
+            <option value="3">过去3小时</option>
+            <option value="6">过去6小时</option>
+            <option value="12">过去12小时</option>
+            <option value="24" selected>过去24小时</option>
+            <option value="48">过去48小时</option>
+          </select>
+        </div>
+      </header>
+
+      <main>
+        <section class="dashboard">
+          <div class="stats-container">
+            <div class="stats-header">
+              <h2>实时统计</h2>
+              <div class="time-display" id="currentTime"></div>
+            </div>
+            <div class="stats-grid">
+              <div class="stat-card">
+                <div class="stat-title">当前密度</div>
+                <div class="stat-value" id="currentDensity">-</div>
+                <div class="stat-unit">人/平方米</div>
+              </div>
+              <div class="stat-card">
+                <div class="stat-title">平均密度</div>
+                <div class="stat-value" id="avgDensity">-</div>
+                <div class="stat-unit">人/平方米</div>
+              </div>
+              <div class="stat-card">
+                <div class="stat-title">最大密度</div>
+                <div class="stat-value" id="maxDensity">-</div>
+                <div class="stat-unit">人/平方米</div>
+              </div>
+              <div class="stat-card">
+                <div class="stat-title">当前人数</div>
+                <div class="stat-value" id="currentPeople">-</div>
+                <div class="stat-unit">人</div>
+              </div>
+            </div>
+          </div>
+
+          <div class="locations-container">
+            <h2>位置信息</h2>
+            <div class="location-list" id="locationList">
+              <!-- 位置信息将通过JavaScript动态生成 -->
+              <div class="loading-spinner">
+                <i class="fas fa-circle-notch fa-spin"></i>
+                <span>加载位置信息...</span>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section class="heatmap-section">
+          <div class="heatmap-header">
+            <h2>实时热图</h2>
+            <div class="heatmap-controls">
+              <button id="predictionBtn" class="btn"><i class="fas fa-chart-line"></i> 查看预测</button>
+              <select id="locationSelector">
+                <option value="">所有位置</option>
+                <!-- 位置选项将通过JavaScript动态生成 -->
+              </select>
+            </div>
+          </div>
+          <div class="heatmap-container">
+            <div id="heatmapContainer"></div>
+            <div class="heatmap-legend">
+              <div class="legend-item">
+                <div class="legend-color" style="background-color: rgba(0, 0, 255, 0.7)"></div>
+                <div class="legend-label">低密度</div>
+              </div>
+              <div class="legend-item">
+                <div class="legend-color" style="background-color: rgba(0, 255, 0, 0.7)"></div>
+                <div class="legend-label">中密度</div>
+              </div>
+              <div class="legend-item">
+                <div class="legend-color" style="background-color: rgba(255, 255, 0, 0.7)"></div>
+                <div class="legend-label">高密度</div>
+              </div>
+              <div class="legend-item">
+                <div class="legend-color" style="background-color: rgba(255, 0, 0, 0.7)"></div>
+                <div class="legend-label">拥挤</div>
+              </div>
+            </div>
+          </div>
+        </section>
+      </main>
+
+      <div id="predictionModal" class="modal">
+        <div class="modal-content">
+          <div class="modal-header">
+            <h2>人流密度预测</h2>
+            <span class="close-modal">&times;</span>
+          </div>
+          <div class="modal-body">
+            <div class="prediction-controls">
+              <select id="predictionLocation">
+                <option value="">所有位置</option>
+                <!-- 位置选项将通过JavaScript动态生成 -->
+              </select>
+              <select id="predictionHours">
+                <option value="6">未来6小时</option>
+                <option value="12">未来12小时</option>
+                <option value="24" selected>未来24小时</option>
+                <option value="48">未来48小时</option>
+                <option value="72">未来72小时</option>
+              </select>
+              <button id="runPredictionBtn" class="btn"><i class="fas fa-play"></i> 运行预测</button>
+            </div>
+            <div class="prediction-chart-container">
+              <canvas id="predictionChart"></canvas>
+            </div>
+            <div class="prediction-info">
+              <p><strong>注意：</strong> 预测基于历史数据模式，实际情况可能因特殊活动或天气等因素而变化。</p>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <footer>
+        <p>© 2025 人流密度监测系统</p>
+      </footer>
+    </div>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/3.9.1/chart.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/heatmap.js/2.0.2/heatmap.min.js"></script>
+    <script src="script.js"></script>
+  </body>
+</html>

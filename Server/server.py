@@ -153,7 +153,7 @@ class DensityPredictor:
 
         # 重采样到小时级别（取平均值）
         df.set_index('timestamp', inplace=True)
-        hourly_df = df['filtered_density'].resample('H').mean()
+        hourly_df = df['filtered_density'].resample('h').mean()
 
         # 处理缺失值
         hourly_df = hourly_df.interpolate(method='linear')

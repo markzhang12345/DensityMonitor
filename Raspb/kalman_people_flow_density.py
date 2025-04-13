@@ -1,7 +1,6 @@
 import numpy as np
 import time
 import datetime
-from typing import Dict, List, Tuple
 from simplified_sensor_simulator import InfraredSensor, WiFiProbe
 
 
@@ -18,10 +17,10 @@ class KalmanFilter:
         process_variance - 过程噪声协方差Q
         measurement_variance - 测量噪声协方差R
         """
-        self.state = initial_state  # 初始状态估计x
-        self.variance = initial_variance  # 初始估计误差协方差P
-        self.process_variance = process_variance  # 过程噪声协方差Q
-        self.measurement_variance = measurement_variance  # 测量噪声协方差R
+        self.state = initial_state
+        self.variance = initial_variance
+        self.process_variance = process_variance
+        self.measurement_variance = measurement_variance
 
     def update(self, measurement, measurement_variance=None):
         """
@@ -35,19 +34,82 @@ class KalmanFilter:
         updated_state - 更新后的状态估计
         updated_variance - 更新后的估计误差协方差
         """
-        # 使用提供的测量噪声协方差或默认值
+        # 参数验证
+        if measurement is None:
+            raise ValueError("测量值不能为空")
+
         R = measurement_variance if measurement_variance is not None else self.measurement_variance
 
-        # 预测步骤
-        predicted_state = self.state  # x' = x (简化模型，假设状态不变)
-        predicted_variance = self.variance + self.process_variance  # P' = P + Q
+        # 噪声协方差自适应调整
+        if hasattr(self, 'adaptive_noise') and self.adaptive_noise:
+            innovation = measurement - self.state
+            normalized_innovation = innovation**2 / (self.variance + R)
+            if normalized_innovation > self.innovation_threshold:
+                R = max(R, abs(innovation) * 0.5)
 
-        # 更新步骤
-        kalman_gain = predicted_variance / \
-            (predicted_variance + R)  # K = P' / (P' + R)
-        self.state = predicted_state + kalman_gain * \
-            (measurement - predicted_state)  # x = x' + K(z - x')
-        self.variance = (1 - kalman_gain) * predicted_variance  # P = (1 - K)P'
+        # 时间更新
+        if hasattr(self, 'state_transition_model') and self.state_transition_model is not None:
+            # 使用状态转换模型进行预测
+            predicted_state = self.state_transition_model(self.state)
+        else:
+            predicted_state = self.state
+
+        # 考虑系统控制输入影响
+        if hasattr(self, 'control_input') and self.control_input is not None:
+            if hasattr(self, 'control_model'):
+                # 应用控制模型
+                control_effect = self.control_model(self.control_input)
+                predicted_state += control_effect
+
+        # 预测误差协方差更新
+        if hasattr(self, 'dynamic_process_variance') and self.dynamic_process_variance:
+            # 动态过程噪声协方差
+            current_process_variance = self.calculate_process_variance()
+        else:
+            current_process_variance = self.process_variance
+
+        predicted_variance = self.variance + current_process_variance
+
+        # 加入遗忘因子，处理非平稳过程
+        if hasattr(self, 'forgetting_factor') and self.forgetting_factor < 1.0:
+            predicted_variance /= self.forgetting_factor
+
+        # 计算卡尔曼增益
+        kalman_gain = predicted_variance / (predicted_variance + R)
+
+        innovation = measurement - predicted_state
+
+        if hasattr(self, 'max_gain') and kalman_gain > self.max_gain:
+            kalman_gain = self.max_gain
+
+        updated_state = predicted_state + kalman_gain * innovation
+
+        if hasattr(self, 'state_bounds'):
+            lower_bound, upper_bound = self.state_bounds
+            updated_state = max(lower_bound, min(updated_state, upper_bound))
+
+        # 方差更新
+        updated_variance = (1 - kalman_gain) * predicted_variance
+
+        # 数值稳定性处理
+        if updated_variance < self.min_variance_threshold:
+            updated_variance = self.min_variance_threshold
+
+        # 记录滤波性能指标
+        if hasattr(self, 'track_metrics') and self.track_metrics:
+            if not hasattr(self, 'innovation_history'):
+                self.innovation_history = []
+            self.innovation_history.append(innovation)
+
+            if not hasattr(self, 'nis'):
+                self.nis = innovation**2 / (predicted_variance + R)
+            else:
+                alpha = 0.95  # 平滑因子
+                self.nis = alpha * self.nis + \
+                    (1 - alpha) * (innovation**2 / (predicted_variance + R))
+
+        self.state = updated_state
+        self.variance = updated_variance
 
         return self.state, self.variance
 
@@ -62,13 +124,11 @@ class PeopleFlowEstimator:
         参数:
         area_size - 区域面积（平方米）
         """
-        self.area_size = area_size  # 区域面积（平方米）
+        self.area_size = area_size
 
-        # 初始化传感器
         self.ir_sensor = InfraredSensor(location="图书馆入口")
         self.wifi_sensor = WiFiProbe(location="图书馆入口")
 
-        # 初始化卡尔曼滤波器
         self.kalman_filter = KalmanFilter(
             initial_state=0,
             initial_variance=10,
@@ -76,27 +136,23 @@ class PeopleFlowEstimator:
             measurement_variance=5
         )
 
-        # 传感器权重系数（初始值）
+        # 传感器权重系数
         self.ir_weight = 0.6
         self.wifi_weight = 0.4
 
-        # 记录历史数据
         self.history = []
 
     def _ir_count_to_density(self, ir_data):
         """将红外传感器数据转换为人流密度估计"""
-        # 简单假设：红外传感器计数直接反映当前区域人数
         count = ir_data.get("count", 0)
         # 计算密度：人数/面积
         density = count / self.area_size
-        # 估计方差（可基于经验设定）
         # 确保方差不为零，添加小的常数0.1
         variance = max(0.2 * count, 0.1)
         return density, variance
 
     def _wifi_count_to_density(self, wifi_data):
         """将WiFi探针数据转换为人流密度估计"""
-        # WiFi探针计数需要考虑一人多设备的情况
         active_count = wifi_data.get("active_devices_count", 0)
 
         # 设备类型分布
@@ -104,7 +160,6 @@ class PeopleFlowEstimator:
         smartphones = device_types.get("smartphone", 0)
         laptops = device_types.get("laptop", 0)
 
-        # 简单模型：估计实际人数
         # 假设平均每人携带1.2个智能手机，0.3个笔记本
         estimated_people = (smartphones / 1.2) + (laptops /
                                                   0.3) if smartphones > 0 or laptops > 0 else active_count / 1.5
@@ -112,7 +167,6 @@ class PeopleFlowEstimator:
 
         # 计算密度
         density = estimated_people / self.area_size
-        # 估计方差（WiFi数据通常比红外数据不稳定）
         # 确保方差不为零，添加小的常数0.1
         variance = max(0.5 * estimated_people, 0.1)
 
@@ -127,10 +181,9 @@ class PeopleFlowEstimator:
         ir_variance = max(ir_variance, 1e-6)
         wifi_variance = max(wifi_variance, 1e-6)
 
-        # 根据方差计算权重（方差越小，权重越大）
+        # 计算权重
         total_variance_inv = (1 / ir_variance) + (1 / wifi_variance)
 
-        # 如果总方差倒数为零（极不可能发生），使用默认权重
         if total_variance_inv == 0:
             self.ir_weight = 0.6
             self.wifi_weight = 0.4
@@ -187,7 +240,6 @@ class PeopleFlowEstimator:
             }
             self.history.append(history_entry)
 
-            # 返回估计结果和详细信息
             details = {
                 "timestamp": timestamp,
                 "ir_count": ir_data.get("count", 0),
@@ -205,7 +257,6 @@ class PeopleFlowEstimator:
             return filtered_density, details
         except Exception as e:
             print(f"估计密度时出错: {str(e)}")
-            # 返回安全的默认值
             timestamp = datetime.datetime.now().isoformat()
             return 0.0, {
                 "timestamp": timestamp,
@@ -240,12 +291,10 @@ class PeopleFlowEstimator:
                 density, details = self.estimate_density()
                 results.append(details)
 
-                # 检查是否有错误
                 if "error" in details:
                     print(f"错误: {details['error']}")
                     print("使用默认值继续...")
                 else:
-                    # 打印当前估计结果
                     print(f"时间: {details['timestamp']}")
                     print(
                         f"红外传感器: {details['ir_count']} 人, 密度: {details['ir_density']:.4f} 人/m²")
@@ -269,17 +318,14 @@ class PeopleFlowEstimator:
         return results
 
 
-# 主函数演示
 if __name__ == "__main__":
     try:
-        # 创建人流密度估算器（假设区域面积为200平方米）
         estimator = PeopleFlowEstimator(area_size=200)
 
         print("开始人流密度估计...")
         print("区域: 图书馆入口, 面积: 200 平方米")
         print("=" * 50)
 
-        # 连续估计30秒
         results = estimator.continuous_estimation(duration=30, interval=2.0)
 
         if results:

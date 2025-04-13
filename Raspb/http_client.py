@@ -8,7 +8,6 @@ import json
 import requests
 import sys
 
-# 控制台和文件日志记录器配置
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s',
@@ -33,9 +32,8 @@ class DensityHttpClient:
         area_size - 监测区域面积（平方米）
         """
         self.server_url = server_url
-        # 初始化人流密度估计器
         self.estimator = PeopleFlowEstimator(area_size=area_size)
-        # 生成唯一设备ID
+        # 设置设备ID
         self.device_id = f"density_client_{datetime.datetime.now().strftime('%Y%m%d%H%M%S')}"
 
     def _prepare_data(self, density_data: Dict[str, Any]) -> Dict[str, Any]:
@@ -45,9 +43,7 @@ class DensityHttpClient:
             "timestamp": datetime.datetime.now().isoformat(),
             "location": "图书馆入口",
             "area_size": density_data.get("area_size", 200),
-            # 滤波后的密度数据
             "filtered_density": density_data.get("filtered_density", 0),
-            # 红外线和WiFi密度数据
             "ir_density": density_data.get("ir_density", 0),
             "wifi_density": density_data.get("wifi_density", 0),
 
@@ -59,18 +55,14 @@ class DensityHttpClient:
     def send_density(self) -> bool:
         """收集并发送当前人流密度"""
         try:
-            # 使用卡尔曼滤波器估计人流密度
             density, details = self.estimator.estimate_density()
 
-            # 打包数据
             data = self._prepare_data(details)
             json_data = json.dumps(data)
 
-            # 打印将要发送的数据
             logger.info(
                 f"估计人流密度: {density:.4f} 人/m², 预计人数: {data['estimated_people']}")
 
-            # 发送数据
             logger.info(f"正在发送数据到 {self.server_url}...")
             response = requests.post(
                 self.server_url,
@@ -79,7 +71,6 @@ class DensityHttpClient:
                 timeout=5
             )
 
-            # 检查响应
             if response.status_code in (200, 201):
                 logger.info(f"数据发送成功!")
                 return True

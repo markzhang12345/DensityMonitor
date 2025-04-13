@@ -6,7 +6,6 @@ import datetime
 import argparse
 import logging
 
-# 配置日志
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s',
@@ -14,10 +13,8 @@ logging.basicConfig(
 )
 logger = logging.getLogger("SimpleSimulator")
 
-# 服务器API地址
 DEFAULT_API_URL = "http://127.0.0.1:5000/api/density"
 
-# 模拟位置配置
 LOCATIONS = [
     {"name": "商场入口", "area_size": 100.0, "base_density": 0.3},
     {"name": "中央广场", "area_size": 500.0, "base_density": 0.2},
@@ -31,45 +28,40 @@ def generate_data(location):
     """生成单个位置的模拟数据"""
     now = datetime.datetime.now()
 
-    # 基础密度加随机波动
     base_density = location["base_density"]
     density_factor = 1.0 + (random.random() * 0.6 - 0.3)  # -30% 到 +30% 的随机波动
 
-    # 根据时间调整密度
     hour = now.hour
     weekday = now.weekday()
 
-    # 工作日/周末系数
-    if weekday < 5:  # 周一到周五
+    if weekday < 5:
         weekday_factor = 1.0
-    else:  # 周末
+    else:
         weekday_factor = 1.5
 
-    # 时间段系数
-    if 7 <= hour <= 9:  # 早高峰
+    if 7 <= hour <= 9:
         hour_factor = 1.5
-    elif 11 <= hour <= 13:  # 午餐时间
+    elif 11 <= hour <= 13:
         hour_factor = 1.7
-    elif 17 <= hour <= 19:  # 晚高峰
+    elif 17 <= hour <= 19:
         hour_factor = 1.8
-    elif 21 <= hour <= 23:  # 晚间
+    elif 21 <= hour <= 23:
         hour_factor = 0.8
-    elif 0 <= hour <= 6:  # 凌晨
+    elif 0 <= hour <= 6:
         hour_factor = 0.2
-    else:  # 其他时间
+    else:
         hour_factor = 1.0
 
-    # 特殊情况：餐饮区在午餐和晚餐时间人流增加
+    # 餐饮区在午餐和晚餐时间人流增加
     if location["name"] == "餐饮区" and (11 <= hour <= 13 or 17 <= hour <= 19):
         hour_factor *= 1.5
 
-    # 特殊情况：电影院在晚间人流增加
+    # 电影院在晚间人流增加
     if location["name"] == "电影院" and 19 <= hour <= 22:
         hour_factor *= 1.7
 
-    # 计算最终密度
     filtered_density = base_density * density_factor * weekday_factor * hour_factor
-    filtered_density = max(0.05, min(filtered_density, 3.0))  # 限制在合理范围内
+    filtered_density = max(0.05, min(filtered_density, 3.0))
 
     # 计算人数
     estimated_people = filtered_density * location["area_size"]
@@ -115,12 +107,10 @@ def send_data(url, data):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="简易人流密度数据模拟器")
+    parser = argparse.ArgumentParser(description="人流密度数据模拟器")
     parser.add_argument("--url", type=str,
                         default=DEFAULT_API_URL, help="API服务器地址")
     parser.add_argument("--interval", type=int, default=5, help="发送间隔(秒)")
-
-    # 移除了--count参数，因为我们现在将一直运行直到手动停止
 
     args = parser.parse_args()
 

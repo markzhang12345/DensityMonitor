@@ -1,9 +1,6 @@
 import numpy as np
 import pandas as pd
-import tensorflow as tf
-from tensorflow.keras.models import Sequential, load_model
-from tensorflow.keras.layers import LSTM, Dense, Dropout
-from tensorflow.keras.callbacks import EarlyStopping, ModelCheckpoint
+from statsmodels.tsa.statespace.sarimax import SARIMAX
 from sklearn.preprocessing import MinMaxScaler
 import matplotlib.pyplot as plt
 import json
@@ -11,6 +8,7 @@ import os
 from pathlib import Path
 import datetime
 import logging
+import pickle
 
 # 配置日志
 logging.basicConfig(
@@ -32,24 +30,27 @@ DATA_DIR = Path("./density_data")
 class DensityPredictor:
     """人流密度预测模型类"""
 
-    def __init__(self, model_name="density_lstm_model", sequence_length=24):
+    def __init__(self, model_name="density_sarima_model", order=(1, 1, 1), seasonal_order=(1, 1, 1, 24)):
         """
         初始化预测器
 
         参数:
         - model_name: 模型名称
-        - sequence_length: 用于预测的历史序列长度（小时）
+        - order: SARIMA模型的非季节性参数 (p,d,q)
+        - seasonal_order: SARIMA模型的季节性参数 (P,D,Q,s)
         """
         self.model_name = model_name
-        self.model_path = MODEL_DIR / f"{model_name}.h5"
-        self.sequence_length = sequence_length
+        self.model_path = MODEL_DIR / f"{model_name}.pkl"
+        self.order = order
+        self.seasonal_order = seasonal_order
         self.model = None
         self.scaler = MinMaxScaler(feature_range=(0, 1))
 
         # 尝试加载已有模型
         if self.model_path.exists():
             try:
-                self.model = load_model(self.model_path)
+                with open(self.model_path, 'rb') as f:
+                    self.model = pickle.load(f)
                 logger.info(f"成功加载模型: {self.model_path}")
             except Exception as e:
                 logger.error(f"加载模型失败: {str(e)}")
@@ -114,83 +115,53 @@ class DensityPredictor:
         # 处理缺失值
         hourly_df = hourly_df.interpolate(method='linear')
 
-        return hourly_df.reset_index()
+        return hourly_df
 
-    def _prepare_sequences(self, data):
+    def train(self, location=None):
         """
-        准备训练序列
-
-        参数:
-        - data: 时序数据
-
-        返回:
-        - X: 输入序列
-        - y: 目标值
-        """
-        scaled_data = self.scaler.fit_transform(data.values.reshape(-1, 1))
-
-        X, y = [], []
-        for i in range(len(scaled_data) - self.sequence_length):
-            X.append(scaled_data[i:i + self.sequence_length, 0])
-            y.append(scaled_data[i + self.sequence_length, 0])
-
-        return np.array(X).reshape(-1, self.sequence_length, 1), np.array(y)
-
-    def train(self, location=None, epochs=50, batch_size=32, validation_split=0.2):
-        """
-        训练LSTM模型
+        训练SARIMA模型
 
         参数:
         - location: 特定位置，如果为None则使用所有位置的数据
-        - epochs: 训练轮数
-        - batch_size: 批量大小
-        - validation_split: 验证集比例
 
         返回:
-        - 训练历史
+        - 训练结果
         """
         # 加载数据
-        df = self._load_data(location=location)
-        if df is None or len(df) < self.sequence_length + 10:
+        series = self._load_data(location=location)
+        if series is None or len(series) < 48:  # 需要足够的数据
             logger.error("数据不足，无法训练模型")
             return None
 
-        logger.info(f"加载了 {len(df)} 条数据记录用于训练")
+        logger.info(f"加载了 {len(series)} 条数据记录用于训练")
 
-        # 准备序列
-        X, y = self._prepare_sequences(df['filtered_density'])
+        # 对数据进行缩放
+        scaled_data = self.scaler.fit_transform(
+            series.values.reshape(-1, 1)).flatten()
+        scaled_series = pd.Series(scaled_data, index=series.index)
 
-        # 创建轻量级LSTM模型
-        self.model = Sequential()
-        self.model.add(LSTM(32, input_shape=(
-            self.sequence_length, 1), return_sequences=True))
-        self.model.add(Dropout(0.2))
-        self.model.add(LSTM(16))
-        self.model.add(Dropout(0.2))
-        self.model.add(Dense(1))
+        # 创建SARIMA模型
+        try:
+            self.model = SARIMAX(
+                scaled_series,
+                order=self.order,
+                seasonal_order=self.seasonal_order,
+                enforce_stationarity=False,
+                enforce_invertibility=False
+            )
 
-        # 编译模型
-        self.model.compile(optimizer='adam', loss='mean_squared_error')
+            # 拟合模型
+            results = self.model.fit(disp=False)
 
-        # 设置回调函数
-        callbacks = [
-            EarlyStopping(monitor='val_loss', patience=10,
-                          restore_best_weights=True),
-            ModelCheckpoint(filepath=self.model_path, save_best_only=True)
-        ]
+            # 保存模型
+            with open(self.model_path, 'wb') as f:
+                pickle.dump(results, f)
 
-        # 训练模型
-        history = self.model.fit(
-            X, y,
-            epochs=epochs,
-            batch_size=batch_size,
-            validation_split=validation_split,
-            callbacks=callbacks,
-            verbose=1
-        )
-
-        logger.info(f"模型训练完成，已保存到 {self.model_path}")
-        return history
+            logger.info(f"模型训练完成，已保存到 {self.model_path}")
+            return results
+        except Exception as e:
+            logger.error(f"训练模型时发生错误: {str(e)}")
+            return None
 
     def predict_next_hours(self, location=None, hours_to_predict=24):
         """
@@ -207,60 +178,56 @@ class DensityPredictor:
             logger.error("模型未加载，无法进行预测")
             return None
 
-        # 加载最近数据
-        df = self._load_data(location=location, days=3)  # 只需要最近几天的数据
-        if df is None or len(df) < self.sequence_length:
+        # 加载历史数据
+        series = self._load_data(location=location, days=7)  # 使用最近7天的数据
+        if series is None or len(series) < 24:
             logger.error("数据不足，无法进行预测")
             return None
 
-        # 获取最后一个序列用于预测
-        last_sequence = df['filtered_density'].values[-self.sequence_length:]
-        scaled_sequence = self.scaler.fit_transform(
-            df['filtered_density'].values.reshape(-1, 1))
-        last_scaled_sequence = scaled_sequence[-self.sequence_length:]
-
-        # 预测未来几小时
-        current_sequence = last_scaled_sequence.reshape(
-            1, self.sequence_length, 1)
-        predictions = []
-        timestamps = []
-
         # 获取最后一个时间戳
-        last_timestamp = df['timestamp'].iloc[-1]
+        last_timestamp = series.index[-1]
 
-        for i in range(hours_to_predict):
-            # 预测下一个值
-            next_pred = self.model.predict(current_sequence, verbose=0)
-            predictions.append(next_pred[0, 0])
+        # 对历史数据进行缩放
+        self.scaler.fit(series.values.reshape(-1, 1))
+        scaled_series = pd.Series(
+            self.scaler.transform(series.values.reshape(-1, 1)).flatten(),
+            index=series.index
+        )
 
-            # 更新时间戳
-            next_timestamp = last_timestamp + datetime.timedelta(hours=i+1)
-            timestamps.append(next_timestamp)
+        try:
+            # 预测未来几小时
+            forecast = self.model.predict(
+                start=len(scaled_series),
+                end=len(scaled_series) + hours_to_predict - 1,
+                dynamic=True
+            )
 
-            # 更新序列（移除第一个值，添加预测值）
-            current_sequence = np.append(current_sequence[:, 1:, :],
-                                         next_pred.reshape(1, 1, 1),
-                                         axis=1)
+            # 转换预测结果回原始比例
+            original_predictions = self.scaler.inverse_transform(
+                forecast.values.reshape(-1, 1)
+            ).flatten()
 
-        # 转换回原始比例
-        original_predictions = self.scaler.inverse_transform(
-            np.array(predictions).reshape(-1, 1)
-        ).flatten()
+            # 生成未来时间戳
+            timestamps = [
+                last_timestamp + datetime.timedelta(hours=i+1) for i in range(hours_to_predict)]
 
-        # 组织返回结果
-        result = {
-            "location": location if location else "所有位置",
-            "predictions": [
-                {
-                    "timestamp": timestamp.strftime("%Y-%m-%dT%H:%M:%S"),
-                    "predicted_density": float(density),
-                    "hour": timestamp.hour
-                }
-                for timestamp, density in zip(timestamps, original_predictions)
-            ]
-        }
+            # 组织返回结果
+            result = {
+                "location": location if location else "所有位置",
+                "predictions": [
+                    {
+                        "timestamp": timestamp.strftime("%Y-%m-%dT%H:%M:%S"),
+                        "predicted_density": float(max(0, density)),  # 确保密度不为负
+                        "hour": timestamp.hour
+                    }
+                    for timestamp, density in zip(timestamps, original_predictions)
+                ]
+            }
 
-        return result
+            return result
+        except Exception as e:
+            logger.error(f"预测时发生错误: {str(e)}")
+            return None
 
     def evaluate(self, location=None, test_days=7):
         """
@@ -278,21 +245,43 @@ class DensityPredictor:
             return None
 
         # 加载测试数据
-        df = self._load_data(location=location, days=test_days)
-        if df is None or len(df) < self.sequence_length + 10:
+        series = self._load_data(
+            location=location, days=test_days + 3)  # 多加载一些数据
+        if series is None or len(series) < 24 * test_days:
             logger.error("测试数据不足")
             return None
 
-        # 准备测试序列
-        X_test, y_test = self._prepare_sequences(df['filtered_density'])
+        # 划分训练集和测试集
+        train_size = len(series) - 24 * test_days
+        train = series.iloc[:train_size]
+        test = series.iloc[train_size:]
 
-        # 预测
-        y_pred = self.model.predict(X_test)
+        # 对数据进行缩放
+        self.scaler.fit(train.values.reshape(-1, 1))
+        scaled_train = pd.Series(
+            self.scaler.transform(train.values.reshape(-1, 1)).flatten(),
+            index=train.index
+        )
+
+        # 使用训练数据拟合模型
+        model = SARIMAX(
+            scaled_train,
+            order=self.order,
+            seasonal_order=self.seasonal_order,
+            enforce_stationarity=False,
+            enforce_invertibility=False
+        )
+        results = model.fit(disp=False)
+
+        # 预测测试集
+        forecast = results.get_forecast(steps=len(test))
+        forecasted_values = forecast.predicted_mean
 
         # 转换回原始比例
-        y_test_orig = self.scaler.inverse_transform(
-            y_test.reshape(-1, 1)).flatten()
-        y_pred_orig = self.scaler.inverse_transform(y_pred).flatten()
+        y_pred_orig = self.scaler.inverse_transform(
+            forecasted_values.values.reshape(-1, 1)
+        ).flatten()
+        y_test_orig = test.values
 
         # 计算评估指标
         mse = np.mean((y_test_orig - y_pred_orig) ** 2)
@@ -336,8 +325,8 @@ class DensityPredictor:
         - 无
         """
         # 获取历史数据
-        df = self._load_data(location=location, days=3)
-        if df is None or len(df) < past_hours:
+        series = self._load_data(location=location, days=3)
+        if series is None or len(series) < past_hours:
             logger.error("历史数据不足，无法绘图")
             return
 
@@ -349,7 +338,7 @@ class DensityPredictor:
             return
 
         # 准备数据
-        historical_data = df.iloc[-past_hours:]
+        historical_data = series.iloc[-past_hours:].reset_index()
 
         # 创建图表
         plt.figure(figsize=(12, 6))
@@ -372,7 +361,7 @@ class DensityPredictor:
 
         # 设置图表属性
         location_name = location if location else "所有位置"
-        plt.title(f'{location_name}人流密度预测')
+        plt.title(f'{location_name}人流密度预测 (SARIMA模型)')
         plt.xlabel('时间')
         plt.ylabel('人流密度 (人/平方米)')
         plt.legend()
@@ -390,30 +379,126 @@ class DensityPredictor:
 
         plt.close()
 
+    def find_best_parameters(self, location=None, max_p=2, max_d=1, max_q=2, max_P=1, max_D=1, max_Q=1, s=24):
+        """
+        自动寻找最佳SARIMA参数
+
+        参数:
+        - location: 特定位置
+        - max_p, max_d, max_q: 非季节性参数的最大值
+        - max_P, max_D, max_Q: 季节性参数的最大值
+        - s: 季节性周期
+
+        返回:
+        - 最佳参数和AIC值
+        """
+        from itertools import product
+
+        # 加载数据
+        series = self._load_data(location=location, days=14)  # 使用两周的数据
+        if series is None or len(series) < 72:
+            logger.error("数据不足，无法进行参数优化")
+            return None
+
+        # 对数据进行缩放
+        scaled_data = self.scaler.fit_transform(
+            series.values.reshape(-1, 1)).flatten()
+        scaled_series = pd.Series(scaled_data, index=series.index)
+
+        # 定义参数网格
+        p = range(0, max_p + 1)
+        d = range(0, max_d + 1)
+        q = range(0, max_q + 1)
+        P = range(0, max_P + 1)
+        D = range(0, max_D + 1)
+        Q = range(0, max_Q + 1)
+
+        # 初始化最佳参数和AIC
+        best_aic = float("inf")
+        best_params = None
+
+        # 搜索最佳参数
+        for param in product(p, d, q, P, D, Q):
+            # 构造参数
+            order = (param[0], param[1], param[2])
+            seasonal_order = (param[3], param[4], param[5], s)
+
+            try:
+                # 拟合模型
+                model = SARIMAX(
+                    scaled_series,
+                    order=order,
+                    seasonal_order=seasonal_order,
+                    enforce_stationarity=False,
+                    enforce_invertibility=False
+                )
+                results = model.fit(disp=False)
+
+                # 更新最佳参数
+                if results.aic < best_aic:
+                    best_aic = results.aic
+                    best_params = (order, seasonal_order)
+
+                logger.info(
+                    f"SARIMA{order}x{seasonal_order} - AIC: {results.aic}")
+            except Exception as e:
+                continue
+
+        return {
+            "location": location if location else "所有位置",
+            "best_params": {
+                "order": best_params[0],
+                "seasonal_order": best_params[1]
+            },
+            "aic": float(best_aic)
+        }
+
 
 def main():
     """主函数"""
     import argparse
 
-    parser = argparse.ArgumentParser(description="人流密度预测工具")
+    parser = argparse.ArgumentParser(description="人流密度预测工具 (SARIMA模型版)")
     parser.add_argument("--train", action="store_true", help="训练模型")
     parser.add_argument("--predict", action="store_true", help="进行预测")
     parser.add_argument("--evaluate", action="store_true", help="评估模型")
     parser.add_argument("--plot", action="store_true", help="绘制预测图表")
+    parser.add_argument("--find-params", action="store_true", help="寻找最佳参数")
     parser.add_argument("--location", type=str, default=None, help="指定位置")
     parser.add_argument("--hours", type=int, default=24, help="预测未来小时数")
     parser.add_argument("--save", type=str, default=None, help="保存图表路径")
+    parser.add_argument("--order", type=str, default="1,1,1",
+                        help="SARIMA非季节性参数 (p,d,q)")
+    parser.add_argument("--seasonal-order", type=str,
+                        default="1,1,1,24", help="SARIMA季节性参数 (P,D,Q,s)")
 
     args = parser.parse_args()
 
+    # 解析SARIMA参数
+    order = tuple(map(int, args.order.split(',')))
+    seasonal_order = tuple(map(int, args.seasonal_order.split(',')))
+
     # 创建预测器实例
-    predictor = DensityPredictor()
+    predictor = DensityPredictor(order=order, seasonal_order=seasonal_order)
+
+    if args.find_params:
+        logger.info("寻找最佳SARIMA参数...")
+        best_params = predictor.find_best_parameters(location=args.location)
+        if best_params:
+            print(json.dumps(best_params, indent=2, ensure_ascii=False))
+
+            # 更新预测器使用最佳参数
+            predictor = DensityPredictor(
+                order=best_params["best_params"]["order"],
+                seasonal_order=best_params["best_params"]["seasonal_order"]
+            )
 
     if args.train:
-        logger.info("开始训练模型...")
-        history = predictor.train(location=args.location)
-        if history:
+        logger.info("开始训练SARIMA模型...")
+        results = predictor.train(location=args.location)
+        if results:
             logger.info("模型训练完成")
+            print(f"模型信息: {results.summary()}")
 
     if args.predict:
         logger.info(f"预测未来 {args.hours} 小时的人流密度...")

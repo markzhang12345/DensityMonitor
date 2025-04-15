@@ -10,6 +10,7 @@ import logging
 import numpy as np
 from pathlib import Path
 from contextlib import asynccontextmanager
+import pickle
 
 import tensorflow as tf
 from tensorflow.keras.models import load_model
@@ -80,30 +81,73 @@ density_records = []
 
 
 class DensityPredictor:
-    """人流密度预测模型类"""
+    """人流密度预测模型类 - SARIMA版本"""
 
-    def __init__(self, model_path="./models/density_lstm_model.h5", sequence_length=24):
+    def __init__(self, models_dir="./Model/models"):
         """
-        初始化预测器
+        初始化SARIMA预测器
 
         参数:
-        - model_path: 模型文件路径
-        - sequence_length: 用于预测的历史序列长度（小时）
+        - models_dir: 包含预训练SARIMA模型的目录
         """
-        self.model_path = model_path
-        self.sequence_length = sequence_length
-        self.model = None
-        self.scaler = MinMaxScaler(feature_range=(0, 1))
+        self.models_dir = Path(models_dir)
+        self.models = {}
+        self.sequence_length = 24  # 保留兼容性
+        self.model = None  # 兼容性属性，用于检查模型是否可用
 
-        # 尝试加载模型
+        # 加载所有预训练的SARIMA模型
         try:
-            self.model = load_model(self.model_path)
-            logger.info(f"成功加载模型: {self.model_path}")
-        except Exception as e:
-            logger.error(f"加载模型失败: {str(e)}")
-            self.model = None
+            import pickle
+            try:
+                import joblib
+            except ImportError:
+                joblib = None
+                logger.warning("未找到joblib库，将仅使用pickle加载模型")
 
-    def _load_data(self, location=None, days=3):
+            # 确保models_dir存在
+            if not self.models_dir.exists():
+                logger.error(f"模型目录不存在: {self.models_dir}")
+                return
+
+            model_files = list(self.models_dir.glob(
+                "density_sarima_model_*.pkl"))
+            if not model_files:
+                logger.error(f"未找到SARIMA模型文件，路径: {self.models_dir}")
+                return
+
+            for model_path in model_files:
+                location = model_path.stem.replace("density_sarima_model_", "")
+                try:
+                    # 尝试使用joblib和pickle两种方式加载
+                    model = None
+                    if joblib:
+                        try:
+                            model = joblib.load(model_path)
+                        except Exception as e:
+                            logger.warning(
+                                f"使用joblib加载模型失败，尝试pickle: {str(e)}")
+
+                    if model is None:
+                        with open(model_path, 'rb') as f:
+                            model = pickle.load(f)
+
+                    self.models[location] = model
+                    logger.info(f"成功加载SARIMA模型: {location}")
+                except Exception as e:
+                    logger.error(f"加载SARIMA模型失败 {location}: {str(e)}")
+
+            if not self.models:
+                logger.error("没有成功加载任何SARIMA模型")
+            else:
+                # 设置模型可用标志，兼容原代码检查
+                self.model = True
+                logger.info(f"成功加载了 {len(self.models)} 个SARIMA模型")
+        except Exception as e:
+            logger.error(f"初始化SARIMA预测器时出错: {str(e)}")
+            import traceback
+            logger.error(traceback.format_exc())
+
+    def _load_data(self, location=None, days=7):
         """加载历史数据"""
         today = datetime.datetime.now()
         all_data = []
@@ -136,69 +180,132 @@ class DensityPredictor:
         import pandas as pd
         df = pd.DataFrame(all_data)
 
-        df['timestamp'] = pd.to_datetime(df['timestamp'])
-        df = df.sort_values('timestamp')
+        if df.empty:
+            logger.warning("数据转换为DataFrame后为空")
+            return None
 
-        df.set_index('timestamp', inplace=True)
-        hourly_df = df['filtered_density'].resample('h').mean()
+        try:
+            df['timestamp'] = pd.to_datetime(df['timestamp'])
+            df = df.sort_values('timestamp')
 
-        hourly_df = hourly_df.interpolate(method='linear')
+            df.set_index('timestamp', inplace=True)
+            hourly_df = df['filtered_density'].resample('h').mean()
 
-        return hourly_df.reset_index()
+            hourly_df = hourly_df.interpolate(method='linear')
+
+            return hourly_df
+        except Exception as e:
+            logger.error(f"处理时间序列数据时出错: {str(e)}")
+            import traceback
+            logger.error(traceback.format_exc())
+            return None
+
+    def _map_location_to_model(self, location):
+        """将用户输入的位置映射到对应的模型名称"""
+        if not location:
+            return "center"  # 默认使用中心区域模型
+
+        location_lower = location.lower()
+
+        # 简单的中文位置名称映射
+        if "图书馆" in location_lower:
+            return "library"
+        elif "电影院" in location_lower or "影院" in location_lower:
+            return "cinema"
+        elif "餐厅" in location_lower or "食堂" in location_lower or "美食" in location_lower:
+            return "food"
+        elif "超市" in location_lower or "商场" in location_lower:
+            return "market"
+        elif "地铁" in location_lower or "站台" in location_lower:
+            return "subway"
+        else:
+            return "center"  # 默认使用中心区域模型
 
     def predict_next_hours(self, location=None, hours_to_predict=24):
-        """预测未来几小时的人流密度"""
-        if self.model is None:
-            logger.error("模型未加载，无法进行预测")
-            return None
+        """使用SARIMA模型预测未来几小时的人流密度"""
+        try:
+            # 检查是否有可用模型
+            if not self.models:
+                logger.error("SARIMA模型未加载，无法进行预测")
+                return None
 
-        # 加载最近数据
-        df = self._load_data(location=location, days=3)
-        if df is None or len(df) < self.sequence_length:
-            logger.error("数据不足，无法进行预测")
-            return None
+            import pandas as pd
+            import numpy as np
 
-        scaled_sequence = self.scaler.fit_transform(
-            df['filtered_density'].values.reshape(-1, 1))
-        last_scaled_sequence = scaled_sequence[-self.sequence_length:]
+            # 尝试导入statsmodels
+            try:
+                import statsmodels.api as sm
+            except ImportError:
+                logger.error("未找到statsmodels库，无法进行SARIMA预测")
+                return None
 
-        # 预测未来几小时
-        current_sequence = last_scaled_sequence.reshape(
-            1, self.sequence_length, 1)
-        predictions = []
-        timestamps = []
+            # 确定使用哪个模型
+            model_key = self._map_location_to_model(location)
+            if model_key not in self.models:
+                logger.warning(
+                    f"未找到位置 '{location}' 对应的模型 '{model_key}'，尝试使用其他模型")
+                # 尝试使用第一个可用模型
+                if self.models:
+                    model_key = next(iter(self.models.keys()))
+                else:
+                    logger.error("没有可用的SARIMA模型")
+                    return None
 
-        last_timestamp = df['timestamp'].iloc[-1]
+            logger.info(f"使用模型 '{model_key}' 预测位置 '{location}'")
 
-        for i in range(hours_to_predict):
-            # 预测下一个值
-            next_pred = self.model.predict(current_sequence, verbose=0)
-            predictions.append(next_pred[0, 0])
+            # 加载历史数据进行预测
+            df = self._load_data(location=location, days=7)
+            if df is None or len(df) < 24:  # 需要至少一天的数据
+                logger.error("数据不足，无法进行预测")
+                return None
 
-            next_timestamp = last_timestamp + datetime.timedelta(hours=i+1)
-            timestamps.append(next_timestamp)
+            model = self.models[model_key]
 
-            current_sequence = np.append(current_sequence[:, 1:, :],
-                                         next_pred.reshape(1, 1, 1),
-                                         axis=1)
+            # 使用SARIMA模型预测
+            try:
+                forecast = model.get_forecast(steps=hours_to_predict)
+                predicted_mean = forecast.predicted_mean
 
-        original_predictions = self.scaler.inverse_transform(
-            np.array(predictions).reshape(-1, 1)
-        ).flatten()
+                # 如果返回值是pandas Series，转换为numpy array
+                if isinstance(predicted_mean, pd.Series):
+                    predictions = predicted_mean.values
+                else:
+                    predictions = predicted_mean
 
-        result = {
-            "location": location if location else "所有位置",
-            "predictions": [
-                {
-                    "timestamp": timestamp.strftime("%Y-%m-%dT%H:%M:%S"),
-                    "predicted_density": float(density),
-                    "hour": timestamp.hour
+                # 确保预测值非负
+                predictions = np.maximum(predictions, 0)
+
+                # 生成时间戳
+                last_timestamp = df.index[-1]
+                timestamps = [
+                    last_timestamp + datetime.timedelta(hours=i+1) for i in range(hours_to_predict)]
+
+                result = {
+                    "location": location if location else "所有位置",
+                    "model_used": model_key,
+                    "predictions": [
+                        {
+                            "timestamp": timestamp.strftime("%Y-%m-%dT%H:%M:%S"),
+                            "predicted_density": float(density),
+                            "hour": timestamp.hour
+                        }
+                        for timestamp, density in zip(timestamps, predictions)
+                    ]
                 }
-                for timestamp, density in zip(timestamps, original_predictions)
-            ]
-        }
 
-        return result
+                return result
+
+            except Exception as e:
+                logger.error(f"SARIMA预测过程出错: {str(e)}")
+                import traceback
+                logger.error(traceback.format_exc())
+                return None
+
+        except Exception as e:
+            logger.error(f"预测过程发生未知错误: {str(e)}")
+            import traceback
+            logger.error(traceback.format_exc())
+            return None
 
 
 predictor = None
@@ -243,14 +350,13 @@ async def lifespan(app: FastAPI):
     logger.info("应用服务启动...")
     global predictor
     try:
-        predictor = DensityPredictor(model_path=str(
-            MODEL_DIR / "density_lstm_model.h5"))
-        if predictor.model is None:
-            logger.warning("预测模型未能正确加载，预测功能将不可用")
+        predictor = DensityPredictor(models_dir="./Model/models")
+        if not predictor.models:
+            logger.warning("SARIMA预测模型未能正确加载，预测功能将不可用")
         else:
-            logger.info("预测模型已成功加载")
+            logger.info(f"成功加载 {len(predictor.models)} 个SARIMA预测模型")
     except Exception as e:
-        logger.error(f"初始化预测器时出错: {str(e)}")
+        logger.error(f"初始化SARIMA预测器时出错: {str(e)}")
         predictor = None
 
     yield  # 应用运行期间
@@ -433,7 +539,7 @@ async def predict_density(request: PredictionRequest = Body(...)):
     """预测未来人流密度"""
     try:
         global predictor
-        if predictor is None or predictor.model is None:
+        if predictor is None or not predictor.models:
             raise HTTPException(status_code=503, detail="预测模型未加载或不可用")
 
         # 执行预测
@@ -443,7 +549,8 @@ async def predict_density(request: PredictionRequest = Body(...)):
         )
 
         if prediction_result is None:
-            raise HTTPException(status_code=400, detail="预测失败，可能是历史数据不足")
+            raise HTTPException(
+                status_code=400, detail="预测失败，可能是历史数据不足或无法找到合适的模型")
 
         return {
             "status": "success",
@@ -453,8 +560,9 @@ async def predict_density(request: PredictionRequest = Body(...)):
         raise
     except Exception as e:
         logger.error(f"预测人流密度时出错: {str(e)}")
+        import traceback
+        logger.error(traceback.format_exc())
         raise HTTPException(status_code=500, detail=f"预测处理错误: {str(e)}")
-
 # 启动服务器函数
 
 

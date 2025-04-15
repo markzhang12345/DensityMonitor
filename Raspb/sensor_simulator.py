@@ -10,7 +10,6 @@ import signal
 import sys
 import serial
 import requests
-import socket
 
 
 class HardwareSensor:
@@ -162,12 +161,10 @@ class WiFiProbe(HardwareSensor):
             self.connect()
 
         try:
-            # 通过HTTP API获取数据
             response = requests.get(self.api_url, timeout=5)
             response.raise_for_status()
             data = response.json()
 
-            # 提取相关字段
             active_count = data.get("active_devices", 0)
             device_types_count = data.get("device_types", {})
 
@@ -280,7 +277,6 @@ class SensorManager:
                         f.write(json.dumps(data) + "\n")
                         f.flush()
 
-                        # 可以在这里添加数据处理或发送到其他系统的代码
                     else:
                         print(f"传感器 {sensor_id} 没有数据")
 
@@ -326,32 +322,25 @@ class SensorMonitor:
         """监控循环"""
         while self.running:
             for sensor_id, sensor in self.sensor_manager.sensors.items():
-                # 检查传感器线程是否还在运行
                 thread_running = (
                     sensor_id in self.sensor_manager.threads and
                     self.sensor_manager.threads[sensor_id].is_alive()
                 )
 
-                # 如果传感器应该运行但线程已停止，尝试重启
                 if self.sensor_manager.running and not thread_running:
                     self.sensor_manager.stop_sensor(sensor_id)
                     time.sleep(2)  # 等待资源释放
                     self.sensor_manager.start_sensor(sensor_id)
 
-            # 等待下一个检查周期
             time.sleep(self.check_interval)
 
 
-# 主函数
 def main():
     """主函数"""
-    # 创建传感器管理器
     manager = SensorManager()
 
-    # 创建传感器监控器
     monitor = SensorMonitor(manager)
 
-    # 配置信息，实际应用时应从配置文件读取
     config = {
         "infrared_sensors": [
             {"device_path": "/dev/ttyUSB0", "location": "图书馆入口", "baudrate": 9600},
@@ -365,35 +354,27 @@ def main():
     }
 
     try:
-        # 添加红外传感器
         for sensor_config in config["infrared_sensors"]:
             sensor = InfraredSensor(**sensor_config)
             manager.add_sensor(sensor)
 
-        # 添加WiFi探针
         for sensor_config in config["wifi_probes"]:
             sensor = WiFiProbe(**sensor_config)
             manager.add_sensor(sensor)
 
-        # 启动所有传感器
         manager.start_all_sensors()
 
-        # 启动监控
         monitor.start()
 
-        # 主线程保持运行
         while True:
             time.sleep(60)
-            # 这里可以添加状态报告或其他周期性任务
 
     except KeyboardInterrupt:
         print("用户中断，停止监测...")
     except Exception as e:
         print(f"发生错误: {str(e)}")
     finally:
-        # 停止监控
         monitor.stop()
-        # 停止所有传感器
         manager.stop_all_sensors()
 
 

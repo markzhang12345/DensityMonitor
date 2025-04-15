@@ -10,6 +10,7 @@ import logging
 import numpy as np
 from pathlib import Path
 from contextlib import asynccontextmanager
+import pandas as pd
 import pickle
 
 import tensorflow as tf
@@ -92,8 +93,8 @@ class DensityPredictor:
         """
         self.models_dir = Path(models_dir)
         self.models = {}
-        self.sequence_length = 24  # 保留兼容性
-        self.model = None  # 兼容性属性，用于检查模型是否可用
+        self.sequence_length = 24
+        self.model = None
 
         # 加载所有预训练的SARIMA模型
         try:
@@ -104,7 +105,6 @@ class DensityPredictor:
                 joblib = None
                 logger.warning("未找到joblib库，将仅使用pickle加载模型")
 
-            # 确保models_dir存在
             if not self.models_dir.exists():
                 logger.error(f"模型目录不存在: {self.models_dir}")
                 return
@@ -118,7 +118,6 @@ class DensityPredictor:
             for model_path in model_files:
                 location = model_path.stem.replace("density_sarima_model_", "")
                 try:
-                    # 尝试使用joblib和pickle两种方式加载
                     model = None
                     if joblib:
                         try:
@@ -139,7 +138,6 @@ class DensityPredictor:
             if not self.models:
                 logger.error("没有成功加载任何SARIMA模型")
             else:
-                # 设置模型可用标志，兼容原代码检查
                 self.model = True
                 logger.info(f"成功加载了 {len(self.models)} 个SARIMA模型")
         except Exception as e:
@@ -155,7 +153,6 @@ class DensityPredictor:
         memory_data = [record for record in density_records if
                        (location is None or record["location"] == location)]
 
-        # 从文件中获取数据
         data_files = sorted(DATA_DIR.glob("density_data_*.json"), reverse=True)
         for file_path in data_files:
             try:
@@ -176,8 +173,6 @@ class DensityPredictor:
             logger.warning(f"没有找到符合条件的数据")
             return None
 
-        # 转换为DataFrame
-        import pandas as pd
         df = pd.DataFrame(all_data)
 
         if df.empty:
@@ -203,28 +198,26 @@ class DensityPredictor:
     def _map_location_to_model(self, location):
         """将用户输入的位置映射到对应的模型名称"""
         if not location:
-            return "center"  # 默认使用中心区域模型
+            return "center"
 
         location_lower = location.lower()
 
-        # 简单的中文位置名称映射
-        if "图书馆" in location_lower:
+        if "图书馆入口" in location_lower:
             return "library"
         elif "电影院" in location_lower or "影院" in location_lower:
             return "cinema"
-        elif "餐厅" in location_lower or "食堂" in location_lower or "美食" in location_lower:
+        elif "餐饮区" in location_lower or "食堂" in location_lower or "美食" in location_lower:
             return "food"
-        elif "超市" in location_lower or "商场" in location_lower:
+        elif "商场入口" in location_lower or "商场" in location_lower:
             return "market"
-        elif "地铁" in location_lower or "站台" in location_lower:
+        elif "地铁站" in location_lower or "站台" in location_lower:
             return "subway"
         else:
-            return "center"  # 默认使用中心区域模型
+            return "center"
 
     def predict_next_hours(self, location=None, hours_to_predict=24):
         """使用SARIMA模型预测未来几小时的人流密度"""
         try:
-            # 检查是否有可用模型
             if not self.models:
                 logger.error("SARIMA模型未加载，无法进行预测")
                 return None
@@ -232,19 +225,16 @@ class DensityPredictor:
             import pandas as pd
             import numpy as np
 
-            # 尝试导入statsmodels
             try:
                 import statsmodels.api as sm
             except ImportError:
                 logger.error("未找到statsmodels库，无法进行SARIMA预测")
                 return None
 
-            # 确定使用哪个模型
             model_key = self._map_location_to_model(location)
             if model_key not in self.models:
                 logger.warning(
                     f"未找到位置 '{location}' 对应的模型 '{model_key}'，尝试使用其他模型")
-                # 尝试使用第一个可用模型
                 if self.models:
                     model_key = next(iter(self.models.keys()))
                 else:
@@ -253,7 +243,6 @@ class DensityPredictor:
 
             logger.info(f"使用模型 '{model_key}' 预测位置 '{location}'")
 
-            # 加载历史数据进行预测
             df = self._load_data(location=location, days=7)
             if df is None or len(df) < 24:  # 需要至少一天的数据
                 logger.error("数据不足，无法进行预测")
@@ -266,13 +255,11 @@ class DensityPredictor:
                 forecast = model.get_forecast(steps=hours_to_predict)
                 predicted_mean = forecast.predicted_mean
 
-                # 如果返回值是pandas Series，转换为numpy array
                 if isinstance(predicted_mean, pd.Series):
                     predictions = predicted_mean.values
                 else:
                     predictions = predicted_mean
 
-                # 确保预测值非负
                 predictions = np.maximum(predictions, 0)
 
                 # 生成时间戳
@@ -331,7 +318,6 @@ def save_data_to_file(data_list):
                 logger.warning(f"文件 {file_path} 格式错误，将使用空列表")
                 existing_data = []
 
-        # 合并数据并写入
         combined_data = existing_data + data_list
 
         temp_file = file_path.with_suffix('.tmp')
@@ -359,9 +345,8 @@ async def lifespan(app: FastAPI):
         logger.error(f"初始化SARIMA预测器时出错: {str(e)}")
         predictor = None
 
-    yield  # 应用运行期间
+    yield
 
-    # 应用关闭时执行
     logger.info("应用关闭中...")
     if density_records:
         try:
@@ -441,16 +426,13 @@ async def get_recent_data(limit: int = Query(10, description="返回记录数量
         if len(recent_records) < limit:
             needed = limit - len(recent_records)
             try:
-                # 获取最新的数据文件
                 data_files = sorted(DATA_DIR.glob(
                     "density_data_*.json"), reverse=True)
                 if data_files:
                     with open(data_files[0], "r", encoding="utf-8") as f:
                         file_records = json.load(f)
-                        # 添加来自文件的记录
                         file_records = file_records[-needed:] if len(
                             file_records) > needed else file_records
-                        # 合并记录
                         recent_records = file_records + recent_records
             except Exception as e:
                 logger.error(f"读取数据文件时出错: {str(e)}")
@@ -563,7 +545,6 @@ async def predict_density(request: PredictionRequest = Body(...)):
         import traceback
         logger.error(traceback.format_exc())
         raise HTTPException(status_code=500, detail=f"预测处理错误: {str(e)}")
-# 启动服务器函数
 
 
 def start_server(host="0.0.0.0", port=5000):
@@ -571,11 +552,9 @@ def start_server(host="0.0.0.0", port=5000):
     uvicorn.run(app, host=host, port=port)
 
 
-# 如果直接运行此文件
 if __name__ == "__main__":
     import argparse
 
-    # 解析命令行参数
     parser = argparse.ArgumentParser(description="人流密度监测服务器")
     parser.add_argument("--host", type=str,
                         default="127.0.0.1", help="服务器主机地址")

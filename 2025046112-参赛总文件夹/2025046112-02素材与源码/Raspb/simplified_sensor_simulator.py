@@ -50,20 +50,17 @@ class InfraredSensor(SensorSimulator):
         self.cumulative_count = 0
 
     def generate_data(self):
-        """生成简化的红外传感器数据"""
-        # 简化的人流计数，随机生成0-30的数字
         count = random.randint(0, 30)
         self.cumulative_count += count
 
-        # 简化的数据结构
         return {
             "sensor_id": self.sensor_id,
             "type": "infrared",
-            "timestamp": datetime.datetime.now().isoformat(),  # 当前时间
-            "location": self.location,  # 传感器位置
-            "count": count,  # 当前读数
-            "cumulative_count": self.cumulative_count,  # 累计读数
-            "is_occupied": count > 0  # 是否有人经过
+            "timestamp": datetime.datetime.now().isoformat(),
+            "location": self.location,
+            "count": count,
+            "cumulative_count": self.cumulative_count,
+            "is_occupied": count > 0
         }
 
 
@@ -73,12 +70,10 @@ class WiFiProbe(SensorSimulator):
     def __init__(self, sensor_id=None, location="图书馆入口"):
         super().__init__(
             sensor_id or f"wifi_{uuid.uuid4().hex[:8]}", location, interval=5.0)
-        # 设备类型
         self.device_types = ["smartphone", "laptop", "tablet", "iot_device"]
 
     def generate_data(self):
         """生成简化的WiFi探针数据"""
-        # 随机生成当前活跃设备数量
         active_count = random.randint(5, 50)
 
         # 随机分配设备类型
@@ -91,31 +86,26 @@ class WiFiProbe(SensorSimulator):
             device_types_count[device_type] = device_types_count.get(
                 device_type, 0) + 1
 
-        # 简化的数据结构
         return {
             "sensor_id": self.sensor_id,
             "type": "wifi_probe",
             "timestamp": datetime.datetime.now().isoformat(),
             "location": self.location,
-            "active_devices_count": active_count,  # 当前活跃设备数量
-            "device_types": device_types_count  # 设备类型统计
+            "active_devices_count": active_count,
+            "device_types": device_types_count
         }
 
 
-# 简单使用示例
 def demo():
     """运行简单的演示"""
-    # 创建传感器
     ir_sensor = InfraredSensor(location="图书馆入口")
     wifi_sensor = WiFiProbe(location="图书馆入口")
 
-    # 获取单次读数
     print("红外传感器单次读数:")
     print(ir_sensor.get_single_reading())
     print("\nWiFi探针单次读数:")
     print(wifi_sensor.get_single_reading())
 
-    # 模拟10秒的数据收集
     print("\n模拟红外传感器10秒数据:")
     ir_data = ir_sensor.simulate(10)
     print(f"收集到{len(ir_data)}条数据")

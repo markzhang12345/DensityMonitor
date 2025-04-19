@@ -2,14 +2,14 @@ import time
 import datetime
 import uuid
 import json
-import logging
 import threading
 import os
+import RPi.GPIO as GPIO
+import pigpio
+import serial_for_url
 from pathlib import Path
 import signal
 import sys
-import serial
-import requests
 
 
 class HardwareSensor:
@@ -64,96 +64,127 @@ class HardwareSensor:
         self.disconnect()
 
 
-class InfraredSensor(HardwareSensor):
-    """红外传感器硬件接口"""
+class GPIOInfraredSensor(HardwareSensor):
+    """红外传感器"""
 
-    def __init__(self, device_path="/dev/ttyUSB0", sensor_id=None, location="图书馆入口",
-                 baudrate=9600, timeout=1.0):
+    def __init__(self, pin_number=17, sensor_id=None, location="图书馆入口", interval=0.5):
         super().__init__(
-            sensor_id or f"ir_{uuid.uuid4().hex[:8]}", location, interval=1.0)
-        self.device_path = device_path
-        self.baudrate = baudrate
-        self.timeout = timeout
+            sensor_id or f"gpio_ir_{uuid.uuid4().hex[:8]}", location, interval)
+        self.pin_number = pin_number
         self.cumulative_count = 0
+        self.last_state = None
+        self.gpio = None
 
     def connect(self):
-        """连接到红外传感器硬件"""
+        """连接到GPIO引脚"""
         try:
-            self.connection = serial.Serial(
-                port=self.device_path,
-                baudrate=self.baudrate,
-                timeout=self.timeout
-            )
-            return True
-        except Exception as e:
-            return False
+            self.gpio = GPIO
 
-    def disconnect(self):
-        """断开红外传感器连接"""
-        if self.connection and self.connection.is_open:
-            self.connection.close()
-            self.connection = None
+            GPIO.setmode(GPIO.BCM)
+            GPIO.setup(self.pin_number, GPIO.IN)
 
-    def read_data(self):
-        """读取红外传感器数据"""
-        if not self.connection or not self.connection.is_open:
-            self.connect()
-
-        try:
-            # 发送读取命令
-            self.connection.write(b'READ\r\n')
-            # 等待响应
-            response = self.connection.readline().decode('utf-8').strip()
-
-            if response.startswith("COUNT:"):
-                count = int(response.split(":")[1])
-                self.cumulative_count += count
-
-                return {
-                    "sensor_id": self.sensor_id,
-                    "type": "infrared",
-                    "timestamp": datetime.datetime.now().isoformat(),
-                    "location": self.location,
-                    "count": count,
-                    "cumulative_count": self.cumulative_count,
-                    "is_occupied": count > 0
-                }
-            else:
-                return None
-
-        except Exception as e:
-            return None
-
-
-class WiFiProbe(HardwareSensor):
-    """WiFi探针硬件接口"""
-
-    def __init__(self, ip_address="192.168.1.100", port=8080, sensor_id=None, location="图书馆入口"):
-        super().__init__(
-            sensor_id or f"wifi_{uuid.uuid4().hex[:8]}", location, interval=5.0)
-        self.ip_address = ip_address
-        self.port = port
-        self.device_types = ["smartphone", "laptop", "tablet", "iot_device"]
-        self.api_url = f"http://{ip_address}:{port}/api/stats"
-
-    def connect(self):
-        """连接到WiFi探针"""
-        try:
-            # 测试连接
-            response = requests.get(
-                f"http://{self.ip_address}:{self.port}/api/status",
-                timeout=5
-            )
-            response.raise_for_status()
+            self.last_state = GPIO.input(self.pin_number)
             self.connection = True
             return True
         except Exception as e:
+            print(f"GPIO红外传感器配置失败: {str(e)}")
             self.connection = False
             return False
 
     def disconnect(self):
-        """断开WiFi探针连接"""
-        self.connection = False
+        if self.gpio and self.connection:
+            try:
+                self.gpio.cleanup(self.pin_number)
+                self.connection = False
+            except:
+                pass
+
+    def read_data(self):
+        if not self.connection:
+            self.connect()
+
+        try:
+            current_state = self.gpio.input(self.pin_number)
+
+            if current_state != self.last_state:
+                count = 1
+                self.cumulative_count += count
+                self.last_state = current_state
+
+                return {
+                    "sensor_id": self.sensor_id,
+                    "type": "gpio_infrared",
+                    "timestamp": datetime.datetime.now().isoformat(),
+                    "location": self.location,
+                    "count": count,
+                    "cumulative_count": self.cumulative_count,
+                    "current_state": current_state,
+                    "is_occupied": current_state == 0
+                }
+            else:
+                return {
+                    "sensor_id": self.sensor_id,
+                    "type": "gpio_infrared",
+                    "timestamp": datetime.datetime.now().isoformat(),
+                    "location": self.location,
+                    "count": 0,
+                    "cumulative_count": self.cumulative_count,
+                    "current_state": current_state,
+                    "is_occupied": current_state == 0
+                }
+
+        except Exception as e:
+            print(f"读取GPIO红外传感器数据失败: {str(e)}")
+            return None
+
+
+class GPIOWiFiProbe(HardwareSensor):
+    """WiFi探针"""
+
+    def __init__(self, rx_pin=23, tx_pin=24, sensor_id=None, location="图书馆入口", interval=5.0):
+        super().__init__(
+            sensor_id or f"gpio_wifi_{uuid.uuid4().hex[:8]}", location, interval)
+        self.rx_pin = rx_pin
+        self.tx_pin = tx_pin
+        self.gpio = None
+        self.uart = None
+
+    def connect(self):
+        try:
+
+            self.gpio = GPIO
+
+            self.pi = pigpio.pi()
+            if not self.pi.connected:
+                print("无法连接到pigpio守护进程，请确保它正在运行")
+                return False
+
+            self.pi.set_mode(self.rx_pin, pigpio.INPUT)
+            self.pi.set_mode(self.tx_pin, pigpio.OUTPUT)
+
+            self.uart = serial_for_url(
+                f"socket://localhost:{self.rx_pin},{self.tx_pin}?baud=9600")
+
+            self.connection = True
+            return True
+        except Exception as e:
+            print(f"GPIO WiFi探针配置失败: {str(e)}")
+            self.connection = False
+            return False
+
+    def disconnect(self):
+        """断开GPIO连接"""
+        if self.connection:
+            try:
+                if self.uart:
+                    self.uart.close()
+
+                if hasattr(self, 'pi') and self.pi.connected:
+                    self.pi.stop()
+
+                self.connection = False
+            except:
+                pass
 
     def read_data(self):
         """读取WiFi探针数据"""
@@ -161,23 +192,58 @@ class WiFiProbe(HardwareSensor):
             self.connect()
 
         try:
-            response = requests.get(self.api_url, timeout=5)
-            response.raise_for_status()
-            data = response.json()
+            self.uart.write(b'GET_STATS\r\n')
 
-            active_count = data.get("active_devices", 0)
-            device_types_count = data.get("device_types", {})
+            time.sleep(0.5)
+            response = b''
+            while self.uart.in_waiting > 0:
+                response += self.uart.read(self.uart.in_waiting)
 
-            return {
-                "sensor_id": self.sensor_id,
-                "type": "wifi_probe",
-                "timestamp": datetime.datetime.now().isoformat(),
-                "location": self.location,
-                "active_devices_count": active_count,
-                "device_types": device_types_count
-            }
+            response_str = response.decode('utf-8').strip()
+
+            if response_str:
+                try:
+                    data = json.loads(response_str)
+
+                    active_count = data.get("active_devices", 0)
+                    device_types = data.get("device_types", {})
+
+                    return {
+                        "sensor_id": self.sensor_id,
+                        "type": "gpio_wifi_probe",
+                        "timestamp": datetime.datetime.now().isoformat(),
+                        "location": self.location,
+                        "active_devices_count": active_count,
+                        "device_types": device_types
+                    }
+                except json.JSONDecodeError:
+                    parts = response_str.split(',')
+                    active_count = 0
+                    device_types = {}
+
+                    for part in parts:
+                        if '=' in part:
+                            key, value = part.split('=')
+                            if key.strip() == 'count':
+                                active_count = int(value.strip())
+                            elif ':' in value:
+                                device_type, count = value.strip().split(':')
+                                device_types[device_type] = int(count)
+
+                    return {
+                        "sensor_id": self.sensor_id,
+                        "type": "gpio_wifi_probe",
+                        "timestamp": datetime.datetime.now().isoformat(),
+                        "location": self.location,
+                        "active_devices_count": active_count,
+                        "device_types": device_types
+                    }
+            else:
+                print(f"WiFi探针没有返回数据")
+                return None
 
         except Exception as e:
+            print(f"读取GPIO WiFi探针数据失败: {str(e)}")
             return None
 
 
@@ -191,21 +257,17 @@ class SensorManager:
         self.ensure_data_directory()
         self.running = False
 
-        # 注册信号处理
         signal.signal(signal.SIGINT, self.signal_handler)
         signal.signal(signal.SIGTERM, self.signal_handler)
 
     def ensure_data_directory(self):
-        """确保数据目录存在"""
         Path(self.data_directory).mkdir(parents=True, exist_ok=True)
 
     def add_sensor(self, sensor):
-        """添加传感器到管理器"""
         self.sensors[sensor.sensor_id] = sensor
         return sensor.sensor_id
 
     def remove_sensor(self, sensor_id):
-        """从管理器移除传感器"""
         if sensor_id in self.sensors:
             if sensor_id in self.threads and self.threads[sensor_id].is_alive():
                 self.sensors[sensor_id].stop()
@@ -218,14 +280,12 @@ class SensorManager:
         return False
 
     def start_sensor(self, sensor_id):
-        """启动单个传感器数据采集"""
         if sensor_id not in self.sensors:
             return False
 
         if sensor_id in self.threads and self.threads[sensor_id].is_alive():
             return False
 
-        # 尝试连接传感器
         if not self.sensors[sensor_id].connect():
             return False
 
@@ -239,7 +299,6 @@ class SensorManager:
         return True
 
     def stop_sensor(self, sensor_id):
-        """停止单个传感器数据采集"""
         if sensor_id in self.sensors:
             self.sensors[sensor_id].stop()
             if sensor_id in self.threads and self.threads[sensor_id].is_alive():
@@ -248,13 +307,11 @@ class SensorManager:
         return False
 
     def start_all_sensors(self):
-        """启动所有传感器数据采集"""
         self.running = True
         for sensor_id in self.sensors:
             self.start_sensor(sensor_id)
 
     def stop_all_sensors(self):
-        """停止所有传感器数据采集"""
         self.running = False
         for sensor_id in list(self.sensors.keys()):
             self.stop_sensor(sensor_id)
@@ -273,7 +330,6 @@ class SensorManager:
                 while self.running:
                     data = sensor.get_single_reading()
                     if data:
-                        # 写入数据到文件
                         f.write(json.dumps(data) + "\n")
                         f.flush()
 
@@ -292,9 +348,7 @@ class SensorManager:
         sys.exit(0)
 
 
-# 定义故障检测与恢复机制
 class SensorMonitor:
-    """传感器监控类，负责监控传感器状态并处理异常"""
 
     def __init__(self, sensor_manager, check_interval=60):
         self.sensor_manager = sensor_manager
@@ -303,7 +357,6 @@ class SensorMonitor:
         self.running = False
 
     def start(self):
-        """启动监控"""
         if self.thread and self.thread.is_alive():
             return False
 
@@ -313,13 +366,11 @@ class SensorMonitor:
         return True
 
     def stop(self):
-        """停止监控"""
         self.running = False
         if self.thread and self.thread.is_alive():
             self.thread.join(timeout=5.0)
 
     def _monitor_loop(self):
-        """监控循环"""
         while self.running:
             for sensor_id, sensor in self.sensor_manager.sensors.items():
                 thread_running = (
@@ -342,29 +393,31 @@ def main():
     monitor = SensorMonitor(manager)
 
     config = {
-        "infrared_sensors": [
-            {"device_path": "/dev/ttyUSB0", "location": "图书馆入口", "baudrate": 9600},
-            {"device_path": "/dev/ttyUSB1", "location": "图书馆出口", "baudrate": 9600},
-            {"device_path": "/dev/ttyUSB2", "location": "自习室", "baudrate": 9600}
+        "gpio_infrared_sensors": [
+            {"pin_number": 17, "location": "图书馆入口", "interval": 0.5},
+            {"pin_number": 27, "location": "图书馆出口", "interval": 0.5},
+            {"pin_number": 22, "location": "自习室", "interval": 0.5}
         ],
-        "wifi_probes": [
-            {"ip_address": "192.168.1.100", "port": 8080, "location": "图书馆入口"},
-            {"ip_address": "192.168.1.101", "port": 8080, "location": "阅览室"}
+        "gpio_wifi_probes": [
+            {"rx_pin": 23, "tx_pin": 24, "location": "图书馆入口", "interval": 5.0},
+            {"rx_pin": 10, "tx_pin": 9, "location": "阅览室", "interval": 5.0}
         ]
     }
 
     try:
-        for sensor_config in config["infrared_sensors"]:
-            sensor = InfraredSensor(**sensor_config)
+        for sensor_config in config.get("gpio_infrared_sensors", []):
+            sensor = GPIOInfraredSensor(**sensor_config)
             manager.add_sensor(sensor)
 
-        for sensor_config in config["wifi_probes"]:
-            sensor = WiFiProbe(**sensor_config)
+        for sensor_config in config.get("gpio_wifi_probes", []):
+            sensor = GPIOWiFiProbe(**sensor_config)
             manager.add_sensor(sensor)
 
         manager.start_all_sensors()
 
         monitor.start()
+
+        print("GPIO传感器监测系统已启动...")
 
         while True:
             time.sleep(60)

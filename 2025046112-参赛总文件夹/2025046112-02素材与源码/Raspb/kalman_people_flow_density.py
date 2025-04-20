@@ -21,6 +21,7 @@ class KalmanFilter:
         self.variance = initial_variance
         self.process_variance = process_variance
         self.measurement_variance = measurement_variance
+        self.min_variance_threshold = 1e-6
 
     def update(self, measurement, measurement_variance=None):
         """
@@ -34,47 +35,37 @@ class KalmanFilter:
         updated_state - 更新后的状态估计
         updated_variance - 更新后的估计误差协方差
         """
-        # 参数验证
         if measurement is None:
             raise ValueError("测量值不能为空")
 
         R = measurement_variance if measurement_variance is not None else self.measurement_variance
 
-        # 噪声协方差自适应调整
         if hasattr(self, 'adaptive_noise') and self.adaptive_noise:
             innovation = measurement - self.state
             normalized_innovation = innovation**2 / (self.variance + R)
             if normalized_innovation > self.innovation_threshold:
                 R = max(R, abs(innovation) * 0.5)
 
-        # 时间更新
         if hasattr(self, 'state_transition_model') and self.state_transition_model is not None:
-            # 使用状态转换模型进行预测
             predicted_state = self.state_transition_model(self.state)
         else:
             predicted_state = self.state
 
-        # 考虑系统控制输入影响
         if hasattr(self, 'control_input') and self.control_input is not None:
             if hasattr(self, 'control_model'):
-                # 应用控制模型
                 control_effect = self.control_model(self.control_input)
                 predicted_state += control_effect
 
-        # 预测误差协方差更新
         if hasattr(self, 'dynamic_process_variance') and self.dynamic_process_variance:
-            # 动态过程噪声协方差
             current_process_variance = self.calculate_process_variance()
         else:
             current_process_variance = self.process_variance
 
         predicted_variance = self.variance + current_process_variance
 
-        # 加入遗忘因子，处理非平稳过程
         if hasattr(self, 'forgetting_factor') and self.forgetting_factor < 1.0:
             predicted_variance /= self.forgetting_factor
 
-        # 计算卡尔曼增益
         kalman_gain = predicted_variance / (predicted_variance + R)
 
         innovation = measurement - predicted_state
@@ -88,14 +79,11 @@ class KalmanFilter:
             lower_bound, upper_bound = self.state_bounds
             updated_state = max(lower_bound, min(updated_state, upper_bound))
 
-        # 方差更新
         updated_variance = (1 - kalman_gain) * predicted_variance
 
-        # 数值稳定性处理
         if updated_variance < self.min_variance_threshold:
             updated_variance = self.min_variance_threshold
 
-        # 记录滤波性能指标
         if hasattr(self, 'track_metrics') and self.track_metrics:
             if not hasattr(self, 'innovation_history'):
                 self.innovation_history = []
@@ -136,7 +124,6 @@ class PeopleFlowEstimator:
             measurement_variance=5
         )
 
-        # 传感器权重系数
         self.ir_weight = 0.6
         self.wifi_weight = 0.4
 
@@ -145,9 +132,7 @@ class PeopleFlowEstimator:
     def _ir_count_to_density(self, ir_data):
         """将红外传感器数据转换为人流密度估计"""
         count = ir_data.get("count", 0)
-        # 计算密度：人数/面积
         density = count / self.area_size
-        # 确保方差不为零，添加小的常数0.1
         variance = max(0.2 * count, 0.1)
         return density, variance
 
@@ -155,19 +140,15 @@ class PeopleFlowEstimator:
         """将WiFi探针数据转换为人流密度估计"""
         active_count = wifi_data.get("active_devices_count", 0)
 
-        # 设备类型分布
         device_types = wifi_data.get("device_types", {})
         smartphones = device_types.get("smartphone", 0)
         laptops = device_types.get("laptop", 0)
 
-        # 假设平均每人携带1.2个智能手机，0.3个笔记本
         estimated_people = (smartphones / 1.2) + (laptops /
                                                   0.3) if smartphones > 0 or laptops > 0 else active_count / 1.5
         estimated_people = min(active_count, estimated_people)  # 取较小值作为保守估计
 
-        # 计算密度
         density = estimated_people / self.area_size
-        # 确保方差不为零，添加小的常数0.1
         variance = max(0.5 * estimated_people, 0.1)
 
         return density, variance
@@ -177,11 +158,9 @@ class PeopleFlowEstimator:
         动态传感器融合
         基于当前测量的方差动态调整传感器权重
         """
-        # 防止除以零错误，确保方差至少为一个很小的正数
         ir_variance = max(ir_variance, 1e-6)
         wifi_variance = max(wifi_variance, 1e-6)
 
-        # 计算权重
         total_variance_inv = (1 / ir_variance) + (1 / wifi_variance)
 
         if total_variance_inv == 0:
@@ -191,9 +170,7 @@ class PeopleFlowEstimator:
             self.ir_weight = (1 / ir_variance) / total_variance_inv
             self.wifi_weight = (1 / wifi_variance) / total_variance_inv
 
-        # 加权融合密度估计
         fused_density = self.ir_weight * ir_density + self.wifi_weight * wifi_density
-        # 融合后的方差
         fused_variance = 1 / total_variance_inv if total_variance_inv > 0 else 1.0
 
         return fused_density, fused_variance
@@ -207,27 +184,22 @@ class PeopleFlowEstimator:
         details - 详细信息字典
         """
         try:
-            # 获取传感器数据
             ir_data = self.ir_sensor.get_single_reading()
             wifi_data = self.wifi_sensor.get_single_reading()
 
-            # 转换为密度估计
             ir_density, ir_variance = self._ir_count_to_density(ir_data)
             wifi_density, wifi_variance = self._wifi_count_to_density(
                 wifi_data)
 
-            # 动态传感器融合
             fused_density, fused_variance = self._dynamic_sensor_fusion(
                 ir_density, ir_variance, wifi_density, wifi_variance
             )
 
-            # 卡尔曼滤波更新
             filtered_density, filtered_variance = self.kalman_filter.update(
                 measurement=fused_density,
                 measurement_variance=fused_variance
             )
 
-            # 记录历史数据
             timestamp = datetime.datetime.now().isoformat()
             history_entry = {
                 "timestamp": timestamp,
@@ -332,7 +304,6 @@ if __name__ == "__main__":
             print("=" * 50)
             print(f"完成 {len(results)} 次人流密度估计")
 
-            # 计算统计信息
             densities = [r.get('filtered_density', 0) for r in results]
             if densities:
                 avg_density = np.mean(densities)

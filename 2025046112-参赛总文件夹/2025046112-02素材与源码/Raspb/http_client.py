@@ -21,7 +21,6 @@ logger = logging.getLogger("DensityMonitor")
 
 class DensityHttpClient:
     """人流密度HTTP客户端类，用于收集和发送人流密度数据到服务器"""
-    # 构造函数
 
     def __init__(self, server_url="http://localhost:5000/api/density", area_size=200):
         """
@@ -33,7 +32,6 @@ class DensityHttpClient:
         """
         self.server_url = server_url
         self.estimator = PeopleFlowEstimator(area_size=area_size)
-        # 设置设备ID
         self.device_id = f"density_client_{datetime.datetime.now().strftime('%Y%m%d%H%M%S')}"
 
     def _prepare_data(self, density_data: Dict[str, Any]) -> Dict[str, Any]:
@@ -97,7 +95,6 @@ def run_continuous_monitoring(server_url: str, area_size: float, interval: float
     interval - 发送间隔（秒）
     duration - 监测持续时间（秒），None表示持续运行直到中断
     """
-    # 创建客户端实例
     client = DensityHttpClient(server_url=server_url, area_size=area_size)
 
     logger.info(f"开始人流密度监测")
@@ -119,13 +116,11 @@ def run_continuous_monitoring(server_url: str, area_size: float, interval: float
         while time.time() < end_time:
             start_process = time.time()
 
-            # 发送数据
             if client.send_density():
                 success_count += 1
             else:
                 failure_count += 1
 
-            # 计算等待时间
             process_time = time.time() - start_process
             wait_time = max(0, interval - process_time)
 
@@ -146,7 +141,6 @@ def run_continuous_monitoring(server_url: str, area_size: float, interval: float
 
 def main():
     """主函数"""
-    # 解析命令行参数
     parser = argparse.ArgumentParser(description="人流密度监测系统")
     parser.add_argument("--server", type=str, default="http://localhost:5000/api/density",
                         help="服务器URL (默认: http://localhost:5000/api/density)")
@@ -163,12 +157,10 @@ def main():
 
     try:
         if args.once:
-            # 只发送一次
             client = DensityHttpClient(
                 server_url=args.server, area_size=args.area)
             client.send_density()
         else:
-            # 持续运行
             run_continuous_monitoring(
                 server_url=args.server,
                 area_size=args.area,

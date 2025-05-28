@@ -7164,3 +7164,12 @@ AttributeError: 'DensityPredictor' object has no attribute '_map_location_to_mod
 2025-04-15 15:20:24,696 - INFO - 接收到数据: density_client_地铁站_20250415 - 地铁站
 2025-04-15 15:20:24,698 - INFO - 接收到数据: density_client_餐饮区_20250415 - 餐饮区
 2025-04-15 15:20:24,700 - INFO - 接收到数据: density_client_电影院_20250415 - 电影院
+2025-05-16 13:29:03,947 - INFO - 应用服务启动...
+2025-05-16 13:29:04,453 - INFO - 成功加载SARIMA模型: center
+2025-05-16 13:29:04,490 - INFO - 成功加载SARIMA模型: cinema
+2025-05-16 13:29:04,525 - INFO - 成功加载SARIMA模型: food
+2025-05-16 13:29:04,563 - INFO - 成功加载SARIMA模型: library
+2025-05-16 13:29:04,597 - INFO - 成功加载SARIMA模型: market
+2025-05-16 13:29:04,636 - INFO - 成功加载SARIMA模型: subway
+2025-05-16 13:29:04,636 - INFO - 成功加载了 6 个SARIMA模型
+2025-05-16 13:29:04,636 - INFO - 成功加载 6 个SARIMA预测模型
